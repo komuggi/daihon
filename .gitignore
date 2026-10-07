@@ -1,0 +1,10 @@
+# 手元だけのメモ（公開しない）
+CLAUDE.local.md
+.claude/settings.local.json
+# 本物の台本は入れない
+/private/
+*.pdf
+.DS_Store
+# 書き出し
+out/
+doc/tags

@@ -1,0 +1,511 @@
+-- daihon：音声作品の台本を書くための nvim プラグイン
+local config = require("daihon.config")
+local parse = require("daihon.parse")
+local count = require("daihon.count")
+local view = require("daihon.view")
+local blocks = require("daihon.blocks")
+local export = require("daihon.export")
+local bar = require("daihon.bar")
+
+local M = {}
+
+local global_opts = {}
+local set_keys
+local bufs = {} -- buf → { root, cfg, config_path, last }
+local timers = {}
+
+--- 全体の設定。nvim の設定から require("daihon").setup({ ... }) で呼ぶ
+function M.setup(opts)
+  global_opts = opts or {}
+  if global_opts.lower_dh == false then
+    pcall(vim.keymap.del, "ca", "dh")
+  end
+  global_opts.lower_dh = nil
+  view.define_highlights()
+  for buf in pairs(bufs) do
+    M.attach(buf, true)
+  end
+end
+
+local function read_part(st, name)
+  local path = vim.fs.joinpath(st.root, st.cfg.parts_dir, name .. ".txt")
+  if vim.fn.filereadable(path) == 1 then
+    return vim.fn.readfile(path)
+  end
+end
+
+local function context(st, include)
+  return count.context(st.cfg, function(name)
+    return read_part(st, name)
+  end, include)
+end
+
+--- 色・文字数・警告を付け直す
+function M.refresh(buf)
+  local st = bufs[buf]
+  if not st or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local records = parse.parse(lines, st.cfg)
+  local ctx = context(st)
+  local summary = count.summary(records, ctx)
+  local issues = parse.check_ranges(records, st.cfg)
+  for _, r in ipairs(records) do
+    if r.output then
+      for _, ref in ipairs(r.refs or {}) do
+        if ref.name:sub(1, 1) == "@" and not export.BUILTINS[ref.name] then
+          issues[#issues + 1] = {
+            lnum = r.lnum,
+            col = ref.s - 1,
+            end_col = ref.e,
+            warn = true,
+            msg = "知らない組み込みの塊です：" .. ref.name,
+          }
+        elseif ref.name:sub(1, 1) ~= "@" and not ctx.has_part(ref.name) then
+          issues[#issues + 1] = {
+            lnum = r.lnum,
+            col = ref.s - 1,
+            end_col = ref.e,
+            warn = true,
+            msg = ("未登録の塊です：%s（%s/%s.txt がありません）"):format(
+              ref.name,
+              st.cfg.parts_dir,
+              ref.name
+            ),
+          }
+        end
+      end
+    end
+  end
+  for _, l in ipairs(count.long_lines(records, ctx, st.cfg.count.long_line)) do
+    issues[#issues + 1] = {
+      lnum = l.lnum,
+      hint = true,
+      msg = ("長いセリフです（%d文字）。一息で読めるのは %d文字くらいまで"):format(
+        l.n,
+        st.cfg.count.long_line
+      ),
+    }
+  end
+  summary.new_blocks = {}
+  for _, r in ipairs(records) do
+    if r.kind == "塊開始" and not ctx.has_part(r.block_name) then
+      summary.new_blocks[r.lnum] = true
+    end
+  end
+  st.last = { records = records, summary = summary }
+  view.render(buf, records, summary, issues)
+  M.update_bars(buf)
+end
+
+local function bar_text(buf, win)
+  local st = bufs[buf]
+  if not st or not st.last then
+    return ""
+  end
+  local lnum = vim.api.nvim_win_get_cursor(win)[1]
+  return count.bar_text(st.last.records, st.last.summary, lnum)
+end
+
+--- 台本を出しているウィンドウの文字数の表示を付け直す
+function M.update_bars(buf)
+  local st = bufs[buf]
+  if not st or not st.cfg.show_count then
+    return
+  end
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    bar.update(win, st.cfg.show_count, bar_text(buf, win))
+  end
+end
+
+--- ウィンドウに来たバッファに合わせて、文字数の表示を付ける／外す
+function M.on_win_enter(win, buf)
+  local st = bufs[buf]
+  if st and st.cfg.show_count then
+    bar.update(win, st.cfg.show_count, bar_text(buf, win))
+  else
+    bar.clear(win)
+  end
+end
+
+M.close_bar = bar.close_float
+
+--- winbar から呼ばれる：右寄せの文字数
+function M.winbar()
+  local win = vim.g.statusline_winid
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    win = vim.api.nvim_get_current_win()
+  end
+  local ok, text = pcall(bar_text, vim.api.nvim_win_get_buf(win), win)
+  if not ok then
+    return "" -- 帯の計算で失敗しても、画面は壊さない
+  end
+  return "%=" .. text:gsub("%%", "%%%%") .. " "
+end
+
+--- ▲ を打った直後に、まだ閉じていない ▼ のラベルを候補に出す
+local function complete_close(buf)
+  local st = bufs[buf]
+  if not st or vim.fn.pumvisible() == 1 then
+    return
+  end
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local before = vim.api.nvim_get_current_line():sub(1, col)
+  local rec = parse.parse({ before }, st.cfg)[1]
+  if not (rec.range and rec.range.op == "close" and rec.range.label == "") then
+    return
+  end
+  local above = vim.api.nvim_buf_get_lines(buf, 0, row - 1, false)
+  local open = parse.open_ranges_at(parse.parse(above, st.cfg), st.cfg, row)
+  if #open == 0 then
+    return
+  end
+  local items = {}
+  for k = #open, 1, -1 do
+    items[#items + 1] = { word = open[k].label, menu = ("%d行目"):format(open[k].lnum) }
+  end
+  vim.fn.complete(col + 1, items)
+end
+
+local function schedule(buf)
+  local t = timers[buf]
+  if t then
+    t:stop()
+  else
+    t = vim.uv.new_timer()
+    timers[buf] = t
+  end
+  t:start(
+    150,
+    0,
+    vim.schedule_wrap(function()
+      M.refresh(buf)
+    end)
+  )
+end
+
+--- 台本のバッファにだけキーを付ける
+set_keys = function(buf, keys)
+  local function map(lhs, fn, desc)
+    if lhs and lhs ~= false and lhs ~= "" then
+      vim.keymap.set("n", lhs, fn, { buffer = buf, desc = "daihon: " .. desc })
+    end
+  end
+  map(keys.toggle, function()
+    M.toggle()
+  end, "塊を開く／閉じる")
+  map(keys.pick, function()
+    M.pick()
+  end, "塊の一覧から差し込む")
+  map(keys.hover, function()
+    if not M.hover() and next(vim.lsp.get_clients({ bufnr = buf })) then
+      vim.lsp.buf.hover()
+    end
+  end, "塊の中身を見る")
+end
+
+local function detach(buf)
+  bufs[buf] = nil
+  if timers[buf] then
+    timers[buf]:stop()
+    timers[buf]:close()
+    timers[buf] = nil
+  end
+end
+
+--- 作品フォルダ（daihon.lua がある所）の中の .txt なら台本として扱う
+function M.attach(buf, force)
+  if bufs[buf] and not force then
+    return
+  end
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name == "" then
+    return
+  end
+  local found = vim.fs.find(config.FILE, { upward = true, path = vim.fs.dirname(name), type = "file" })[1]
+  if not found then
+    return
+  end
+
+  local project, err = config.read_project(found)
+  if err then
+    vim.notify("daihon: " .. err, vim.log.levels.WARN)
+  end
+  M.last_buf = buf
+  local cfg = config.merge(config.merge(config.defaults, global_opts), project)
+  local ok, verr = config.validate(cfg)
+  if not ok then
+    vim.notify("daihon: 設定が正しくありません：" .. verr, vim.log.levels.ERROR)
+    return
+  end
+
+  local first = bufs[buf] == nil
+  bufs[buf] = { root = vim.fs.dirname(found), cfg = cfg, config_path = found, config_warning = err }
+  vim.b[buf].daihon = true
+
+  if first then
+    local group = vim.api.nvim_create_augroup("daihon_buf_" .. buf, { clear = true })
+    vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+      group = group,
+      buffer = buf,
+      callback = function(ev)
+        if ev.event == "TextChangedI" then
+          complete_close(buf)
+        end
+        schedule(buf)
+      end,
+    })
+    vim.api.nvim_create_autocmd("BufWritePost", {
+      group = group,
+      buffer = buf,
+      callback = function()
+        blocks.create_new_on_save(buf, bufs[buf])
+        M.refresh(buf)
+      end,
+    })
+    vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+      group = group,
+      buffer = buf,
+      callback = function()
+        M.update_bars(buf)
+      end,
+    })
+    vim.api.nvim_create_autocmd("BufEnter", {
+      group = group,
+      buffer = buf,
+      callback = function()
+        M.last_buf = buf
+        M.refresh(buf)
+      end,
+    })
+    vim.api.nvim_create_autocmd({ "BufWipeout" }, {
+      group = group,
+      buffer = buf,
+      callback = function()
+        detach(buf)
+      end,
+    })
+  end
+  if first then
+    set_keys(buf, cfg.keys or {})
+  end
+  M.refresh(buf)
+end
+
+--- daihon.lua を保存したら、その作品の台本を読み直す
+function M.reload_config(path)
+  path = vim.fs.normalize(path)
+  for buf, st in pairs(bufs) do
+    if vim.fs.normalize(st.config_path) == path then
+      M.attach(buf, true)
+    end
+  end
+end
+
+--- :Dh count — 全体と見出しごとの文字数（セリフだけ／ト書きも）
+function M.show_count(buf)
+  buf = buf or vim.api.nvim_get_current_buf()
+  local st = bufs[buf]
+  if not st then
+    vim.notify(
+      "daihon: このファイルは台本として開かれていません（作品フォルダに daihon.lua がありません）"
+    )
+    return
+  end
+  local records = parse.parse(vim.api.nvim_buf_get_lines(buf, 0, -1, false), st.cfg)
+  local all = {}
+  for _, lt in ipairs(st.cfg.line_types) do
+    if lt.output ~= false then
+      all[#all + 1] = lt.name
+    end
+  end
+  table.insert(all, 1, "セリフ")
+  local a = count.summary(records, context(st))
+  local b = count.summary(records, context(st, all))
+
+  local out =
+    { ("全体  %s文字（ト書きも数えると %s文字）"):format(count.format(a.total), count.format(b.total)) }
+  for _, r in ipairs(records) do
+    if a.headings[r.lnum] then
+      out[#out + 1] = ("%s%s  %s文字（%s）"):format(
+        string.rep("  ", r.level - 1),
+        r.title,
+        count.format(a.headings[r.lnum]),
+        count.format(b.headings[r.lnum])
+      )
+    end
+  end
+  vim.notify(table.concat(out, "\n"), vim.log.levels.INFO, { title = "daihon" })
+end
+
+local function with_state(fn)
+  return function(buf)
+    buf = buf or vim.api.nvim_get_current_buf()
+    local st = bufs[buf]
+    if not st then
+      vim.notify(
+        "daihon: このファイルは台本として開かれていません（作品フォルダに daihon.lua がありません）"
+      )
+      return false
+    end
+    return fn(buf, st)
+  end
+end
+
+M.toggle = with_state(blocks.toggle)
+M.pick = with_state(blocks.pick)
+M.hover = with_state(blocks.hover)
+
+--- :Dh pdf / :Dh html — 台本を PDF と HTML に書き出す（what = "pdf" | "html"）
+function M.export(what, buf)
+  buf = buf or vim.api.nvim_get_current_buf()
+  local st = bufs[buf]
+  if not st then
+    vim.notify(
+      "daihon: このファイルは台本として開かれていません（作品フォルダに daihon.lua がありません）"
+    )
+    return
+  end
+  local cfg, pdf = st.cfg, st.cfg.export.pdf
+  local records = parse.parse(vim.api.nvim_buf_get_lines(buf, 0, -1, false), cfg)
+  local summary = count.summary(records, context(st))
+
+  local css
+  if pdf.css then
+    local path = vim.fs.joinpath(st.root, pdf.css)
+    if vim.fn.filereadable(path) == 0 then
+      vim.notify("daihon: CSS が見つかりません：" .. path, vim.log.levels.ERROR)
+      return
+    end
+    css = table.concat(vim.fn.readfile(path), "\n")
+  end
+
+  local cmd = pdf.command
+  if what == "pdf" and not cmd then
+    if vim.fn.executable("vivliostyle") == 0 then
+      vim.notify(
+        "daihon: PDF を作るには Vivliostyle が要ります。ターミナルで次を打ってください：\n  npm install -g @vivliostyle/cli",
+        vim.log.levels.ERROR
+      )
+      return
+    end
+    cmd = { "vivliostyle" }
+  end
+
+  local function rel(path)
+    return path:sub(#st.root + 2)
+  end
+  local out_dir = vim.fs.joinpath(st.root, cfg.export.dir)
+  vim.fn.mkdir(out_dir, "p")
+  local base = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":t:r")
+  local jobs, missing_all = {}, {}
+  local variants = { { "ト書きあり", true } }
+  if pdf.both then
+    variants[#variants + 1] = { "ト書きなし", false }
+  end
+
+  for _, v in ipairs(variants) do
+    local name = base .. "_" .. v[1]
+    local html, missing = export.build(records, cfg, {
+      togaki = v[2],
+      title = name,
+      css = css,
+      summary = summary,
+      get_part = function(n)
+        return read_part(st, n)
+      end,
+    })
+    for _, m in ipairs(missing) do
+      missing_all[m] = true
+    end
+    local html_path = vim.fs.joinpath(out_dir, name .. ".html")
+    vim.fn.writefile(vim.split(html, "\n", { plain = true }), html_path)
+
+    if what == "html" then
+      vim.notify("daihon: 書き出しました：" .. rel(html_path))
+    else
+      jobs[#jobs + 1] = { name = name, html = html_path, pdf = vim.fs.joinpath(out_dir, name .. ".pdf") }
+    end
+  end
+
+  if next(missing_all) then
+    local names = vim.tbl_keys(missing_all)
+    table.sort(names)
+    vim.notify(
+      "daihon: 未登録の塊はそのまま出しました：" .. table.concat(names, "、"),
+      vim.log.levels.WARN
+    )
+  end
+
+  -- PDF は1つずつ作る（同時に作ると Vivliostyle がぶつかる）
+  local function run(i)
+    local job = jobs[i]
+    if not job then
+      return
+    end
+    vim.notify("daihon: PDF を作っています：" .. job.name)
+    local args = vim.list_extend(vim.deepcopy(cmd), { "build", job.html, "-o", job.pdf })
+    vim.system(args, { cwd = out_dir, text = true }, function(res)
+      vim.schedule(function()
+        if res.code == 0 then
+          vim.notify("daihon: PDF ができました：" .. rel(job.pdf))
+        else
+          local err = vim.trim((res.stderr or "") .. (res.stdout or ""))
+          vim.notify(
+            "daihon: PDF を作れませんでした（" .. job.name .. "）\n" .. err:sub(-800),
+            vim.log.levels.ERROR
+          )
+        end
+        run(i + 1)
+      end)
+    end)
+  end
+  run(1)
+end
+
+--- 台本として開いているバッファの状態（:checkhealth 用）
+function M.state(buf)
+  return bufs[buf]
+end
+
+--- ステータスライン（lualine など）に出す用：「Track 01 おかえり 32文字 ／ 全体 41文字」
+function M.status()
+  return bar_text(vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
+end
+
+-- :Dh のやること
+M.commands = {
+  pdf = function()
+    M.export("pdf")
+  end,
+  html = function()
+    M.export("html")
+  end,
+  count = function()
+    M.show_count()
+  end,
+  pick = function()
+    M.pick()
+  end,
+  toggle = function()
+    M.toggle()
+  end,
+}
+
+--- :Dh {やること}
+function M.command(arg)
+  local fn = M.commands[arg]
+  if not fn then
+    local names = vim.tbl_keys(M.commands)
+    table.sort(names)
+    vim.notify(
+      "daihon: :Dh のあとに書けるのは " .. table.concat(names, " / ") .. " です",
+      vim.log.levels.WARN
+    )
+    return
+  end
+  fn()
+end
+
+return M
