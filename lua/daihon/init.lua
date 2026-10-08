@@ -6,6 +6,7 @@ local view = require("daihon.view")
 local blocks = require("daihon.blocks")
 local export = require("daihon.export")
 local bar = require("daihon.bar")
+local complete = require("daihon.complete")
 
 local M = {}
 
@@ -144,28 +145,50 @@ function M.winbar()
   return "%=" .. text:gsub("%%", "%%%%") .. " "
 end
 
---- ▲ を打った直後に、まだ閉じていない ▼ のラベルを候補に出す
-local function complete_close(buf)
+--- 候補を出す。選ぶまで勝手に入らないよう、そのときだけ completeopt に noselect を足す
+local function show_candidates(col, items)
+  local co = vim.o.completeopt
+  if not (co:find("noselect") or co:find("noinsert")) then
+    vim.o.completeopt = co .. ",noselect"
+    vim.api.nvim_create_autocmd({ "CompleteDone", "InsertLeave" }, {
+      once = true,
+      callback = function()
+        vim.o.completeopt = co
+      end,
+    })
+  end
+  vim.fn.complete(col + 1, items)
+end
+
+local function candidates_here(buf, st)
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local before = vim.api.nvim_get_current_line():sub(1, col)
+  local above = parse.parse(vim.api.nvim_buf_get_lines(buf, 0, row - 1, false), st.cfg)
+  return complete.at(before, above, st.cfg)
+end
+
+--- ▼・▲ を打った直後に候補を出す
+local function auto_complete(buf)
   local st = bufs[buf]
   if not st or vim.fn.pumvisible() == 1 then
     return
   end
-  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-  local before = vim.api.nvim_get_current_line():sub(1, col)
-  local rec = parse.parse({ before }, st.cfg)[1]
-  if not (rec.range and rec.range.op == "close" and rec.range.label == "") then
-    return
+  local c = candidates_here(buf, st)
+  if c and c.auto and #c.items > 0 then
+    show_candidates(c.col, c.items)
   end
-  local above = vim.api.nvim_buf_get_lines(buf, 0, row - 1, false)
-  local open = parse.open_ranges_at(parse.parse(above, st.cfg), st.cfg, row)
-  if #open == 0 then
-    return
+end
+
+local omni_last
+--- <C-x><C-o> で候補を出す（omnifunc）
+function M.omnifunc(findstart, base)
+  local buf = vim.api.nvim_get_current_buf()
+  local st = bufs[buf]
+  if findstart == 1 then
+    omni_last = st and candidates_here(buf, st) or nil
+    return omni_last and omni_last.col or -3
   end
-  local items = {}
-  for k = #open, 1, -1 do
-    items[#items + 1] = { word = open[k].label, menu = ("%d行目"):format(open[k].lnum) }
-  end
-  vim.fn.complete(col + 1, items)
+  return omni_last and complete.filter(omni_last.items, base) or {}
 end
 
 local function schedule(buf)
@@ -243,6 +266,7 @@ function M.attach(buf, force)
   local first = bufs[buf] == nil
   bufs[buf] = { root = vim.fs.dirname(found), cfg = cfg, config_path = found, config_warning = err }
   vim.b[buf].daihon = true
+  vim.bo[buf].omnifunc = "v:lua.require'daihon'.omnifunc"
 
   if first then
     local group = vim.api.nvim_create_augroup("daihon_buf_" .. buf, { clear = true })
@@ -251,7 +275,7 @@ function M.attach(buf, force)
       buffer = buf,
       callback = function(ev)
         if ev.event == "TextChangedI" then
-          complete_close(buf)
+          auto_complete(buf)
         end
         schedule(buf)
       end,
