@@ -163,8 +163,10 @@ end
 local function candidates_here(buf, st)
   local row, col = unpack(vim.api.nvim_win_get_cursor(0))
   local before = vim.api.nvim_get_current_line():sub(1, col)
-  local above = parse.parse(vim.api.nvim_buf_get_lines(buf, 0, row - 1, false), st.cfg)
-  return complete.at(before, above, st.cfg)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local all = parse.parse(lines, st.cfg)
+  local above = vim.list_slice(all, 1, row - 1)
+  return complete.at(before, above, st.cfg, all)
 end
 
 --- ▼・▲ を打った直後に候補を出す

@@ -53,17 +53,112 @@ local function close_labels(records, cfg)
   return items
 end
 
+--- 指示の中身が「SE : …」「SE：…」なら、そのあとの文字。違えば nil
+--- （全角の「：」は3バイトなので、[:：] のようにまとめて書けない）
+local function se_rest(body)
+  return body:match("^SE%s*:%s*(.-)$") or body:match("^SE%s*：%s*(.-)$")
+end
+
+--- 「・」「、」で区切った最後の1つ
+local function last_part(s)
+  local cut = 0
+  for _, sep in ipairs({ "・", "、" }) do
+    local i = 0
+    while true do
+      local j = s:find(sep, i + 1, true)
+      if not j then
+        break
+      end
+      i = j
+      cut = math.max(cut, j + #sep - 1)
+    end
+  end
+  return s:sub(cut + 1)
+end
+
+--- 言葉の数を数えて、多い順に並べる
+local function by_count(list)
+  local n, order = {}, {}
+  for _, w in ipairs(list) do
+    if w ~= "" then
+      if not n[w] then
+        order[#order + 1] = w
+      end
+      n[w] = (n[w] or 0) + 1
+    end
+  end
+  table.sort(order, function(a, b)
+    return n[a] > n[b]
+  end)
+  return order
+end
+
+--- SE のあとに出す言葉：登録したもの → この台本で使ったもの（多い順）
+function M.se_words(records, cfg)
+  local used = {}
+  for _, rec in ipairs(records) do
+    local rest = rec.kind == "指示" and not rec.range and se_rest(rec.body)
+    if rest then
+      for part in (rest .. "・"):gmatch("(.-)・") do
+        for w in (part .. "、"):gmatch("(.-)、") do
+          used[#used + 1] = parse.trim(w)
+        end
+      end
+    end
+  end
+  local items, seen = {}, {}
+  for _, w in ipairs((cfg.words or {}).se or {}) do
+    push(items, seen, w, "登録")
+  end
+  for _, w in ipairs(by_count(used)) do
+    push(items, seen, w, "使った")
+  end
+  return items
+end
+
+--- 指示の言葉：登録したもの → この台本で使った指示（SE と ▼▲ を除く、多い順）
+function M.shiji_words(records, cfg)
+  local used = {}
+  for _, rec in ipairs(records) do
+    if rec.kind == "指示" and not rec.range and not se_rest(rec.body) then
+      used[#used + 1] = rec.body
+    end
+  end
+  local items, seen = {}, {}
+  for _, w in ipairs((cfg.words or {}).shiji or {}) do
+    push(items, seen, w, "登録")
+  end
+  for _, w in ipairs(by_count(used)) do
+    push(items, seen, w, "使った")
+  end
+  return items
+end
+
 --- カーソルより前の文字（before）から、候補を出す場所と候補を決める
---- records はその行より上の台本（使った言葉と、閉じていない ▼ を拾う）
+--- above はその行より上の台本（閉じていない ▼ を拾う）。all は台本全体（使った言葉を拾う。なければ above）
 --- 返す表：{ col = 置き換えを始める位置（0 始まり）, items, auto = 打った直後に出すか }。出さないなら nil
-function M.at(before, records, cfg)
+function M.at(before, above, cfg, all)
+  all = all or above
   local rec = parse.parse({ before }, cfg)[1]
-  if not (rec and rec.range) then
+  if not rec then
     return nil
   end
-  local label = rec.range.label
-  local items = rec.range.op == "open" and M.open_labels(records, cfg) or close_labels(records, cfg)
-  return { col = #before - #label, items = items, auto = label == "" }
+  if rec.range then
+    local label = rec.range.label
+    local items = rec.range.op == "open" and M.open_labels(all, cfg) or close_labels(above, cfg)
+    return { col = #before - #label, items = items, auto = label == "" }
+  end
+  if rec.kind ~= "指示" then
+    return nil
+  end
+  local rest = se_rest(rec.body)
+  if rest then
+    -- SE : のあと（「・」「、」で区切った次も）は、打った直後に出す
+    local part = last_part(rest)
+    return { col = #before - #part, items = M.se_words(all, cfg), auto = part == "" }
+  end
+  -- ほかの指示は <C-x><C-o> のときだけ
+  return { col = #before - #rec.body, items = M.shiji_words(all, cfg), auto = false }
 end
 
 --- 打った分（base）で絞る

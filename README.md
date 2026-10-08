@@ -81,6 +81,8 @@ nvim を開き直して `:checkhealth daihon` を打ちます。✅ が並べば
 
 ![塊の中身を見ているところ](doc/images/hover.png)
 
+`// SE : ` と打つと、登録した SE とこの台本で使った SE が候補に出るので、書き方の揺れがそろいます。
+
 ほかのコマンドは `:dh count`（文字数の一覧）、`:dh pick`（塊を選んで差し込む）、`:dh toggle`（塊を開く／閉じる）です。動く例は [examples/sample](examples/sample) にあります。
 
 ## もっと詳しく
