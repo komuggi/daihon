@@ -28,9 +28,11 @@ npm install -g @vivliostyle/cli
 
 ```lua
 return {
-  { "komuggi/daihon", opts = {} },
+  { "komuggi/daihon", version = "*", opts = {} },
 }
 ```
+
+`version = "*"` があると、リリースした版（v0.1.0 など）だけを受け取ります。開発中の最新を使いたいときは外します。
 
 **3. 確かめる**
 
