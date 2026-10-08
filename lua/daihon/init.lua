@@ -7,6 +7,7 @@ local blocks = require("daihon.blocks")
 local export = require("daihon.export")
 local bar = require("daihon.bar")
 local complete = require("daihon.complete")
+local hankaku = require("daihon.hankaku")
 
 local M = {}
 
@@ -288,6 +289,21 @@ function M.attach(buf, force)
       callback = function()
         blocks.create_new_on_save(buf, bufs[buf])
         M.refresh(buf)
+      end,
+    })
+    vim.api.nvim_create_autocmd("InsertCharPre", {
+      group = group,
+      buffer = buf,
+      callback = function()
+        local st = bufs[buf]
+        if not (st and st.cfg.hankaku) then
+          return
+        end
+        local col = vim.api.nvim_win_get_cursor(0)[2]
+        local half = hankaku.convert(vim.v.char, vim.api.nvim_get_current_line():sub(1, col))
+        if half then
+          vim.v.char = half
+        end
       end,
     })
     vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {

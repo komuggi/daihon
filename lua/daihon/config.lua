@@ -46,6 +46,9 @@ M.defaults = {
     shiji = {}, -- 指示の行で <C-x><C-o> を押すと出す。例 { "耳元で", "吐息まじりに" }
   },
 
+  -- 日本語入力のまま打った記号（／／ ＃ ｛｝ など）を、記号として使う場所でだけ半角にする
+  hankaku = true,
+
   parts_dir = "parts",
 
   -- 文字数をいつも出す場所："winbar"（ウィンドウの上の帯）／"float"（右上の小窓）／"statusline"（下の帯・lualine などに自分で足す）／false

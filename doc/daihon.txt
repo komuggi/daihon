@@ -52,6 +52,16 @@
 
 記号と種類は `line_types` で自分で決められます（|daihon-config|）。
 
+                                                              *daihon-hankaku*
+日本語入力のまま打った記号は、記号として使う場所でだけ半角にします
+（`hankaku = false` で止められます）。セリフの中の全角はそのままです。
+
+    `／／` `＃` `（` `￥`   行の頭
+    `）`              `(` で始まる行
+    `｛` `｝`          どこでも
+    `：`              `// SE` のすぐあと
+    全角の空白        `#` や `//` のすぐあと
+
 複数人の台本は `mode = "multi"` にして、`名前「セリフ」`（`multi.style =
 "kagi"`）か `名前：セリフ`（`"colon"`）で書きます。名前とかっこは数えません。
 
@@ -217,6 +227,7 @@ HTML だけを作ります。PDF を作るには Vivliostyle CLI が要ります
         shiji = {},                -- 指示の行で <C-x><C-o> を押すと出す言葉
       },
 
+      hankaku = true,              -- 記号を半角にする（|daihon-hankaku|）
       parts_dir = "parts",
       show_count = "winbar",     -- "winbar"／"float"／"statusline"／false
 
