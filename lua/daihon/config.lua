@@ -26,6 +26,10 @@ M.defaults = {
     distance = { "遠", "中", "近", "密" },
     sep = "・",
     words = {}, -- 例 { "ささやき", "有声音", "無声音" }
+    -- 早く出す・見やすくする（どれも false で止められる）
+    auto_close = true, -- ▼ラベル で改行すると、下に ▲ラベル を入れる
+    brackets = true, -- 行の頭の [[ ]]（「「 」」）を ▼ ▲ にする
+    guides = true, -- 範囲の中の行の左に縦の線（画面だけ）
   },
 
   -- 見出し。count = true の見出しは、次の同じか上の見出しまでを数える
@@ -59,6 +63,8 @@ M.defaults = {
     toggle = "<localleader>b", -- 塊を開く／閉じる
     pick = "<localleader>p", -- 塊の一覧から差し込む
     hover = "K", -- 塊の中身を見る
+    range_open = "<localleader>[", -- 下に ▼ の行を作る。行を選んで押すと ▼〜▲ で囲む
+    range_close = "<localleader>]", -- 下に ▲ の行を作る
   },
 
   export = {

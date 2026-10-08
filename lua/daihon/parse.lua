@@ -139,6 +139,17 @@ function M.parse(lines, cfg)
         end
       end
       if not r.kind then
+        -- 行の頭に ▼▲ を直接書いた行は、範囲だけの行
+        local rg = find_range(t, ranges)
+        if rg then
+          r.kind = "範囲"
+          r.output = true
+          r.body = t
+          r.range = rg
+          r.range.col = lead
+        end
+      end
+      if not r.kind then
         for _, lt in ipairs(cfg.line_types or {}) do
           local p = match_prefix(t, lt.prefix)
           if p then
@@ -245,6 +256,57 @@ local function walk_ranges(records, cfg, stop, issues)
     flush("ファイルの終わり")
   end
   return open
+end
+
+--- 行ごとに、その行を囲んでいる範囲（開いた順）。縦の線に使う
+--- ▼ の行は自分を含まず、▲ の行は自分が閉じた後の形。返す表：{ [lnum] = { { label, key, lnum }, ... } }
+function M.range_depths(records, cfg)
+  local out, open = {}, {}
+  local function snap(lnum)
+    if #open > 0 then
+      out[lnum] = vim.list_slice(open)
+    end
+  end
+  for _, r in ipairs(records) do
+    if r.kind == "見出し" then
+      open = {}
+    elseif r.range and r.range.op == "close" then
+      local k = M.find_open(open, r.range.key)
+      if k then
+        table.remove(open, k)
+      end
+      snap(r.lnum)
+    else
+      snap(r.lnum)
+      if r.range and r.range.op == "open" then
+        open[#open + 1] = { label = r.range.label, key = r.range.key, lnum = r.lnum }
+      end
+    end
+  end
+  return out
+end
+
+--- ▼ の行から、対になる ▲ の行の文字を作る（「// ▼前」→「// ▲前」、「(▼前)」→「(▲前)」）
+function M.close_text(r, cfg)
+  local close = (cfg.ranges or {}).close or "▲"
+  local i = r.range.col + 1
+  return r.text:sub(1, i - 1) .. close .. r.text:sub(i + #r.range.mark)
+end
+
+--- below（▼ の行より下）に、この ▼ を閉じる ▲ があるか（次の見出しまで）
+function M.has_close_below(below, key)
+  for _, r in ipairs(below) do
+    if r.kind == "見出し" then
+      return false
+    end
+    if r.range and r.range.op == "close" and r.range.key ~= "" and key:sub(1, #r.range.key) == r.range.key then
+      return true
+    end
+    if r.range and r.range.op == "open" and r.range.key == key then
+      return false -- 閉じる前に、同じラベルがまた開いている
+    end
+  end
+  return false
 end
 
 --- ▼▲ の対応を確かめる。返す表：{ { lnum, col, msg }, ... }

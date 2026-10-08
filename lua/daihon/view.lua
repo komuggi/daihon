@@ -17,7 +17,23 @@ local LINKS = {
   DaihonSpeaker = "Identifier",
   DaihonBlock = "Constant",
   DaihonCount = "Comment",
+  -- 範囲の縦の線（ラベルごとに色を変える）
+  DaihonGuide1 = "DiagnosticInfo",
+  DaihonGuide2 = "DiagnosticHint",
+  DaihonGuide3 = "DiagnosticOk",
+  DaihonGuide4 = "DiagnosticWarn",
+  DaihonGuide5 = "Function",
+  DaihonGuide6 = "Constant",
 }
+
+--- ラベルから線の色を決める（同じラベルはいつも同じ色）
+local function guide_hl(key)
+  local n = 0
+  for i = 1, #key do
+    n = n + key:byte(i)
+  end
+  return "DaihonGuide" .. (n % 6 + 1)
+end
 
 function M.define_highlights()
   for name, link in pairs(LINKS) do
@@ -56,6 +72,8 @@ function M.render(buf, records, summary, issues)
           virt_text_pos = "eol",
         })
       end
+    elseif r.kind == "範囲" then
+      mark(buf, row, 0, len, "DaihonRange")
     elseif r.type then
       mark(buf, row, 0, len, r.type.hl or "DaihonShiji")
       if r.range then
@@ -66,6 +84,14 @@ function M.render(buf, records, summary, issues)
     end
     for _, ref in ipairs(r.refs or {}) do
       mark(buf, row, ref.s - 1, ref.e, "DaihonBlock", 120)
+    end
+    local depth = summary.depths and summary.depths[r.lnum]
+    if depth then
+      local chunks = {}
+      for _, o in ipairs(depth) do
+        chunks[#chunks + 1] = { "│ ", guide_hl(o.key) }
+      end
+      vim.api.nvim_buf_set_extmark(buf, M.ns, row, 0, { virt_text = chunks, virt_text_pos = "inline", priority = 50 })
     end
   end
 

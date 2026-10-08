@@ -90,6 +90,9 @@ function M.refresh(buf)
       ),
     }
   end
+  if st.cfg.ranges.guides then
+    summary.depths = parse.range_depths(records, st.cfg)
+  end
   summary.new_blocks = {}
   for _, r in ipairs(records) do
     if r.kind == "塊開始" and not ctx.has_part(r.block_name) then
@@ -182,6 +185,94 @@ local function auto_complete(buf)
   end
 end
 
+--- 行の頭の [[ ]]（「「 」」）を ▼ ▲ にする
+local function brackets(st)
+  if not st.cfg.ranges.brackets then
+    return
+  end
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local line = vim.api.nvim_get_current_line()
+  local before = hankaku.brackets(line:sub(1, col), st.cfg.ranges)
+  if before then
+    vim.api.nvim_set_current_line(before .. line:sub(col + 1))
+    vim.api.nvim_win_set_cursor(0, { row, #before })
+  end
+end
+
+local shapes = {} -- buf → { n = 行の数, row = カーソルの行 }（改行したかを見分ける）
+
+--- ▼ラベル の行で改行したら、下に ▲ラベル を入れる（まだ閉じていなければ）
+local function auto_close(buf, st)
+  local n = vim.api.nvim_buf_line_count(buf)
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local prev = shapes[buf]
+  shapes[buf] = { n = n, row = row }
+  if not (st.cfg.ranges.auto_close and prev and n == prev.n + 1 and row == prev.row + 1 and row > 1) then
+    return
+  end
+  local records = parse.parse(vim.api.nvim_buf_get_lines(buf, 0, -1, false), st.cfg)
+  local r = records[row - 1]
+  if not (r.range and r.range.op == "open" and r.range.label ~= "") then
+    return
+  end
+  if parse.has_close_below(vim.list_slice(records, row + 1), r.range.key) then
+    return
+  end
+  vim.api.nvim_buf_set_lines(buf, row, row, false, { parse.close_text(r, st.cfg) })
+  shapes[buf] = { n = n + 1, row = row }
+end
+
+--- 下に ▼（op = "open"）か ▲（"close"）の行を作って、候補を出す
+function M.range_line(op)
+  local buf = vim.api.nvim_get_current_buf()
+  local st = bufs[buf]
+  if not st then
+    return
+  end
+  local mark = op == "open" and st.cfg.ranges.open or st.cfg.ranges.close
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  vim.api.nvim_buf_set_lines(buf, row, row, false, { mark })
+  vim.api.nvim_win_set_cursor(0, { row + 1, #mark })
+  vim.cmd("startinsert!")
+  vim.schedule(function()
+    auto_complete(buf)
+  end)
+end
+
+--- 選んだ行を ▼ラベル 〜 ▲ラベル で囲む（ラベルは候補から選ぶか、自分で書く）
+function M.wrap()
+  local buf = vim.api.nvim_get_current_buf()
+  local st = bufs[buf]
+  if not st then
+    return
+  end
+  local a, b = vim.fn.line("v"), vim.fn.line(".")
+  local first, last = math.min(a, b), math.max(a, b)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+
+  local ranges = st.cfg.ranges
+  local put = function(label)
+    if not label or label == "" then
+      return
+    end
+    vim.api.nvim_buf_set_lines(buf, last, last, false, { ranges.close .. label })
+    vim.api.nvim_buf_set_lines(buf, first - 1, first - 1, false, { ranges.open .. label })
+  end
+  local records = parse.parse(vim.api.nvim_buf_get_lines(buf, 0, -1, false), st.cfg)
+  local items = vim.tbl_map(function(it)
+    return it.word
+  end, complete.open_labels(records, st.cfg))
+  local own = "（自分で書く）"
+  table.insert(items, 1, own)
+  vim.ui.select(items, { prompt = "囲むラベル" }, function(choice)
+    if choice == own then
+      vim.ui.input({ prompt = "ラベル：" }, put)
+    else
+      put(choice)
+    end
+  end)
+end
+
 local omni_last
 --- <C-x><C-o> で候補を出す（omnifunc）
 function M.omnifunc(findstart, base)
@@ -213,9 +304,9 @@ end
 
 --- 台本のバッファにだけキーを付ける
 set_keys = function(buf, keys)
-  local function map(lhs, fn, desc)
+  local function map(lhs, fn, desc, mode)
     if lhs and lhs ~= false and lhs ~= "" then
-      vim.keymap.set("n", lhs, fn, { buffer = buf, desc = "daihon: " .. desc })
+      vim.keymap.set(mode or "n", lhs, fn, { buffer = buf, desc = "daihon: " .. desc })
     end
   end
   map(keys.toggle, function()
@@ -229,6 +320,15 @@ set_keys = function(buf, keys)
       vim.lsp.buf.hover()
     end
   end, "塊の中身を見る")
+  map(keys.range_open, function()
+    M.range_line("open")
+  end, "下に ▼ の行を作る")
+  map(keys.range_open, function()
+    M.wrap()
+  end, "選んだ行を ▼〜▲ で囲む", "x")
+  map(keys.range_close, function()
+    M.range_line("close")
+  end, "下に ▲ の行を作る")
 end
 
 local function detach(buf)
@@ -278,6 +378,11 @@ function M.attach(buf, force)
       buffer = buf,
       callback = function(ev)
         if ev.event == "TextChangedI" then
+          local st = bufs[buf]
+          if st then
+            brackets(st)
+            auto_close(buf, st)
+          end
           auto_complete(buf)
         end
         schedule(buf)
@@ -289,6 +394,13 @@ function M.attach(buf, force)
       callback = function()
         blocks.create_new_on_save(buf, bufs[buf])
         M.refresh(buf)
+      end,
+    })
+    vim.api.nvim_create_autocmd("InsertEnter", {
+      group = group,
+      buffer = buf,
+      callback = function()
+        shapes[buf] = { n = vim.api.nvim_buf_line_count(buf), row = vim.api.nvim_win_get_cursor(0)[1] }
       end,
     })
     vim.api.nvim_create_autocmd("InsertCharPre", {

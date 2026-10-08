@@ -29,3 +29,15 @@ test("半角：塊のかっこはどこでも、SE のあとの ： と、記号
   eq(" ", hankaku.convert("\227\128\128", "//"))
   eq(nil, hankaku.convert("\227\128\128", "おかえり"))
 end)
+
+test("半角：行の頭の [[ ]] 「「 」」 は ▼ ▲ に", function()
+  local r = { open = "▼", close = "▲" }
+  eq("▼", hankaku.brackets("[[", r))
+  eq("▲", hankaku.brackets("]]", r))
+  eq("▼", hankaku.brackets("「「", r))
+  eq("▲", hankaku.brackets("  」」", r):gsub("^%s+", ""))
+  eq("// ▼", hankaku.brackets("// [[", r))
+  eq("(▼", hankaku.brackets("(「「", r))
+  eq(nil, hankaku.brackets("あ「「", r))
+  eq(nil, hankaku.brackets("[", r))
+end)

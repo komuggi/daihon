@@ -67,11 +67,14 @@
 
 囲い指示                                                        *daihon-ranges*
 
-指示と場面の行の頭に `▼ラベル` を書くと範囲が始まり、`▲ラベル` で終わります。
+行の頭（または指示・場面の行の頭）に `▼ラベル` を書くと範囲が始まり、
+`▲ラベル` で終わります。範囲の行は文字数に入りません。
 >text
-    // ▼右・近
+    ▼右・近
     ねえ、ちょっとだけ
-    // ▲右・近
+    ▲右・近
+
+    // ▼右・近      ← この書き方も使えます
 <
 - 範囲は重ねてよく、閉じる順番は問いません
 - 閉じのラベルは、開いたラベルの頭だけでもかまいません
@@ -82,6 +85,16 @@
   位置×距離（`前・近` など）、`ranges.words` の言葉の順です
 - `▲` を打つと、まだ閉じていないラベルが候補に出ます
 - 打ちかけのラベルは `<C-x><C-o>` で候補を出せます
+
+早く出す（どれも設定で止められます）:
+- `▼ラベル` の行で改行すると、下に `▲ラベル` が入ります（`ranges.auto_close`）
+- 行の頭で `[[` と打つと `▼`、`]]` で `▲` になります。日本語入力の `「「`
+  `」」` でもなります（`ranges.brackets`）
+- `<localleader>[` で下に `▼` の行を作って候補を出します。行を選んで押すと、
+  選んだ行を `▼`〜`▲` で囲みます。`<localleader>]` で `▲` の行を作ります
+
+範囲の中の行の左には、縦の線を出します（画面だけ。ファイルには入りません）。
+範囲が重なると線が増え、ラベルごとに色が変わります（`ranges.guides`）。
 
 言葉の候補                                                       *daihon-words*
 
@@ -184,6 +197,8 @@ HTML だけを作ります。PDF を作るには Vivliostyle CLI が要ります
     `<localleader>b`  塊を開く／閉じる
     `<localleader>p`  塊の一覧から差し込む
     `K`               塊の中身を見る
+    `<localleader>[`  下に ▼ の行を作る（行を選んで押すと ▼〜▲ で囲む）
+    `<localleader>]`  下に ▲ の行を作る
 
 ==============================================================================
 7. 設定                                                         *daihon-config*
@@ -209,6 +224,9 @@ HTML だけを作ります。PDF を作るには Vivliostyle CLI が要ります
         distance = { "遠", "中", "近", "密" },            -- ▼ の候補：距離
         sep = "・",
         words = {},                                        -- ▼ の候補：そのほかの言葉
+        auto_close = true,                                 -- 改行で ▲ を入れる
+        brackets = true,                                   -- [[ ]] を ▼ ▲ に
+        guides = true,                                     -- 縦の線
       },
 
       headings = {
@@ -231,7 +249,10 @@ HTML だけを作ります。PDF を作るには Vivliostyle CLI が要ります
       parts_dir = "parts",
       show_count = "winbar",     -- "winbar"／"float"／"statusline"／false
 
-      keys = { toggle = "<localleader>b", pick = "<localleader>p", hover = "K" },
+      keys = {
+        toggle = "<localleader>b", pick = "<localleader>p", hover = "K",
+        range_open = "<localleader>[", range_close = "<localleader>]",
+      },
 
       export = {
         dir = "out",
@@ -268,6 +289,7 @@ HTML だけを作ります。PDF を作るには Vivliostyle CLI が要ります
     DaihonSpeaker   話す人の名前    (Identifier)
     DaihonBlock     塊の名前        (Constant)
     DaihonCount     文字数の表示    (Comment)
+    DaihonGuide1〜6 範囲の縦の線    (DiagnosticInfo など)
 
 ==============================================================================
 9. 安全のために                                                *daihon-safety*

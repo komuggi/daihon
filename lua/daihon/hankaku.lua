@@ -30,4 +30,18 @@ function M.convert(ch, before)
   end
 end
 
+--- 行の頭（「// 」「(」のあとも）の [[ ]] 「「 」」 を ▼ ▲ にした「カーソルより前」を返す。変えないなら nil
+function M.brackets(before, ranges)
+  local open, close = ranges.open or "▼", ranges.close or "▲"
+  local pairs_ = { { "%[%[", open }, { "「「", open }, { "%]%]", close }, { "」」", close } }
+  for _, head in ipairs({ "^(%s*)", "^(%s*//%s*)", "^(%s*%(%s*)" }) do
+    for _, p in ipairs(pairs_) do
+      local lead = before:match(head .. p[1] .. "$")
+      if lead then
+        return lead .. p[2]
+      end
+    end
+  end
+end
+
 return M
